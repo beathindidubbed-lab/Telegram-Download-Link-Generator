@@ -32,6 +32,8 @@ from ..security.rate_limiter import invalid_request_guard
 
 import hashlib
 from typing import Optional, Dict, Any
+from .health_routes import routes as health_routes
+app.add_routes(health_routes)
 
 logger = logging.getLogger(__name__)
 
