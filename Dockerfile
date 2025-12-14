@@ -2,7 +2,7 @@ FROM python:3.11-bullseye AS builder
 
 WORKDIR /opt/app
 
-# Install build dependencies in a single layer
+# Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libffi-dev \
@@ -17,13 +17,12 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --upgrade pip
 
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
 FROM python:3.11-slim-bullseye
 WORKDIR /app
 
-# Create non-root user and set up directories
+# Create non-root user
 RUN groupadd -r appuser && useradd --no-log-init -r -g appuser appuser \
     && mkdir -p /app \
     && chown -R appuser:appuser /app
@@ -34,7 +33,7 @@ COPY --from=builder /opt/venv /opt/venv
 # Copy application code
 COPY --chown=appuser:appuser StreamBot/ ./StreamBot/
 
-# Set environment variables for Python optimization
+# Set environment variables
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -43,7 +42,6 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PORT=8080
 
-# Switch to non-root user
 USER appuser
 
 EXPOSE ${PORT}
