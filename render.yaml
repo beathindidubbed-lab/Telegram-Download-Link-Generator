@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: telegram-download-link-generator
+    name: telegram-streamable-link-generator
     env: docker
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/info
@@ -39,7 +39,7 @@ services:
       - key: WORKERS
         value: 4
       - key: GITHUB_REPO_URL
-        value: https://github.com/AnikethJana/Telegram-Download-Link-Generator
+        value: 
       
       # --- Admin Users (Required) ---
       - key: ADMINS
@@ -73,7 +73,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: DATABASE_NAME
-        value: TgDlBotUsers
+        value: telegrambot123
       
       # --- URL Shortener Configuration ---
       - key: ADLINKFLY_URL
