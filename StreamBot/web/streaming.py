@@ -117,103 +117,137 @@ async def stream_video_route(request: web.Request):
         # Using Pyrogram's high-level stream_media for better reliability and seeking.
         chunk_size = 1024 * 1024  # Pyrogram's stream_media uses 1MB chunks.
         
-        # Calculate chunk offset and how many bytes to skip in the first chunk.
-        start_chunk = start_offset // chunk_size
-        skip_bytes = start_offset % chunk_size
-        
         # Calculate the total bytes we need to serve for this request.
         bytes_to_serve = end_offset - start_offset + 1
 
         bytes_streamed = 0
         request_id = f"stream_{message_id}_{encoded_id[:10]}"
-        max_retries = 2
+        max_retries = 3  # Increased retries for better reliability
         current_retry = 0
 
         async with tracked_stream_response(response, stream_tracker, request_id):
             while current_retry <= max_retries:
                 try:
-                    # CRITICAL: Calculate remaining bytes to stream based on what we've already sent
-                    # This ensures proper resumption after client switches
+                    # Calculate remaining bytes to stream
                     remaining_bytes = bytes_to_serve - bytes_streamed
                     
                     if remaining_bytes <= 0:
-                        # Already streamed everything
-                        logger.info(f"All bytes already streamed for video {message_id}. Total: {bytes_streamed}")
+                        logger.info(f"Video stream completed for {message_id}. Total: {bytes_streamed} bytes")
                         break
                     
-                    # Recalculate chunk offset and skip bytes based on current position (memory-efficient)
+                    # Calculate current position for resumption
                     current_byte_offset = start_offset + bytes_streamed
                     current_start_chunk = current_byte_offset // chunk_size
                     current_skip_bytes = current_byte_offset % chunk_size
                     
                     if bytes_streamed > 0:
-                        logger.debug(f"Resuming video stream for {message_id}. Already sent: {bytes_streamed}, Remaining: {remaining_bytes}")
+                        logger.info(f"Resuming video stream for {message_id} at byte {current_byte_offset}")
                     
-                    # Get the async generator for media chunks.
-                    # NOTE: stream_media offset parameter is in chunks, not bytes
+                    # Use Pyrogram's stream_media with chunk offset
                     media_stream = streamer_client.stream_media(
                         media_msg,
-                        offset=current_start_chunk  # This is chunk offset, not byte offset
+                        offset=current_start_chunk
                     )
                     
-                    current_chunk = 0
+                    chunk_index = 0
+                    consecutive_errors = 0
+                    
                     async for chunk in media_stream:
                         if not chunk:
-                            break  # End of file.
+                            logger.debug(f"Empty chunk received for {message_id}, ending stream")
+                            break
 
-                        # If this is the first chunk from our current position, skip the unneeded bytes from the beginning.
-                        if current_chunk == 0:
+                        # Skip bytes in first chunk if resuming mid-chunk
+                        if chunk_index == 0 and current_skip_bytes > 0:
                             chunk = chunk[current_skip_bytes:]
 
-                        # If this chunk would exceed our byte limit, truncate it.
+                        # Truncate last chunk if needed
                         if bytes_streamed + len(chunk) > bytes_to_serve:
                             chunk = chunk[:bytes_to_serve - bytes_streamed]
 
+                        # Write chunk with improved error handling
                         try:
-                            await response.write(chunk)
+                            # Use a timeout for writing to prevent indefinite stalls
+                            await asyncio.wait_for(response.write(chunk), timeout=30)
                             bytes_streamed += len(chunk)
+                            consecutive_errors = 0  # Reset error counter on success
+                            
+                            # Log progress for large streams
+                            if bytes_to_serve > 0 and bytes_streamed % (10 * 1024 * 1024) < len(chunk):  # Check around every 10MB mark
+                                progress = (bytes_streamed / bytes_to_serve) * 100
+                                logger.info(f"Video stream progress for {message_id}: {progress:.1f}%")
+                                
+                        except asyncio.TimeoutError:
+                            logger.warning(f"Timeout writing chunk for {message_id}")
+                            consecutive_errors += 1
+                            if consecutive_errors >= 3:
+                                logger.error(f"Too many consecutive write errors for {message_id}")
+                                return response
+                            await asyncio.sleep(1)
+                            continue
+                            
                         except (ConnectionResetError, BrokenPipeError, asyncio.CancelledError):
-                            logger.debug(f"Client disconnected during video stream {message_id}")
-                            return response  # Exit cleanly on client disconnect.
+                            logger.info(f"Client disconnected during video stream {message_id}")
+                            return response
+                            
                         except Exception as e:
-                            logger.error(f"Error streaming chunk for {message_id}: {e}")
-                            return response  # Exit on write errors.
+                            logger.error(f"Error writing chunk for {message_id}: {e}")
+                            consecutive_errors += 1
+                            if consecutive_errors >= 3:
+                                return response
+                            await asyncio.sleep(1)
+                            continue
                         
-                        current_chunk += 1
+                        chunk_index += 1
                         
-                        # Stop if we have served all required bytes.
+                        # Check if we've served all required bytes
                         if bytes_streamed >= bytes_to_serve:
                             break
                     
-                    # If we reach here, streaming completed successfully.
+                    # Streaming completed successfully
+                    logger.info(f"Video stream completed successfully for {message_id}")
                     break
 
                 except FloodWait as e:
-                    logger.warning(f"FloodWait during video stream {message_id}: {e}. Already streamed: {bytes_streamed}")
-                    # Try alternative client first before waiting.
-                    try:
-                        alternative_client = await client_manager.get_alternative_streaming_client(streamer_client)
-                        if alternative_client:
-                            logger.info(f"Switching from @{streamer_client.me.username} to @{alternative_client.me.username} for {message_id}. Will resume from byte {bytes_streamed}")
-                            streamer_client = alternative_client
-                            await asyncio.sleep(1)
-                            continue  # Retry with new client, will resume from current position
-                        else:
-                            # No alternative client, wait briefly (cap at 60s for low-resource server)
-                            await asyncio.sleep(min(e.value, 60))
-                            continue  # Retry with same client after waiting
-                    except Exception as alt_e:
-                        logger.error(f"Error switching client for {message_id}: {alt_e}")
-                        await asyncio.sleep(min(e.value, 60))  # Cap wait time
-                        continue  # Retry after waiting
+                    logger.warning(f"FloodWait during video stream {message_id}: {e.value}s")
+                    
+                    # Try alternative client first
+                    alternative_client = await client_manager.get_alternative_streaming_client(streamer_client)
+                    if alternative_client:
+                        logger.info(f"Switching to alternative client for {message_id}")
+                        streamer_client = alternative_client
+                        # Re-fetch media message in case of client switch is necessary for Pyrogram's internal logic
+                        media_msg = await get_media_message(streamer_client, message_id)
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        # No alternative, wait briefly
+                        wait_time = min(e.value, 30)  # Cap at 30 seconds
+                        logger.info(f"Waiting {wait_time}s before retry")
+                        await asyncio.sleep(wait_time)
+                        continue
 
                 except Exception as e:
                     current_retry += 1
-                    logger.error(f"Error during video streaming {message_id} (attempt {current_retry}): {e}")
+                    logger.error(f"Error during video streaming {message_id} (attempt {current_retry}/{max_retries}): {e}", exc_info=True)
+                    
                     if current_retry > max_retries:
                         logger.error(f"Max retries reached for {message_id}, aborting")
                         break
-                    await asyncio.sleep(2 * current_retry)  # Exponential backoff
+                    
+                    # Try alternative client on non-FloodWait error
+                    try:
+                        alternative_client = await client_manager.get_alternative_streaming_client(streamer_client)
+                        if alternative_client:
+                            logger.info(f"Switching to alternative client after error")
+                            streamer_client = alternative_client
+                            # Re-fetch media message
+                            media_msg = await get_media_message(streamer_client, message_id)
+                    except Exception as alt_e:
+                        logger.error(f"Error switching client: {alt_e}")
+                    
+                    # Exponential backoff
+                    await asyncio.sleep(min(2 ** current_retry, 10))
 
         # Record bandwidth usage
         if bytes_streamed > 0:
