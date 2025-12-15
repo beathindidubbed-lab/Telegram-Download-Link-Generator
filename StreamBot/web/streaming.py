@@ -73,7 +73,7 @@ async def stream_video_route(request: web.Request):
             'Content-Disposition': 'inline'
         }
 
-        # Handle range requests for video seeking - FIXED CALCULATION
+        # Handle range requests for video seeking - FIXED
         range_header = request.headers.get('Range')
         status_code = 200
         start_offset = 0
@@ -89,19 +89,7 @@ async def stream_video_route(request: web.Request):
             
             start_offset, end_offset = range_result
             
-            # IMPORTANT FIX: Only limit response size for very large requests
-            # Let the browser request what it needs, but prevent abuse
-            requested_size = end_offset - start_offset + 1
-            max_reasonable_request = 50 * 1024 * 1024  # 50MB max per request
-            
-            if requested_size > max_reasonable_request:
-                # Only limit if the request is unreasonably large
-                end_offset = start_offset + max_reasonable_request - 1
-                # Make sure we don't exceed file size
-                if end_offset >= file_size:
-                    end_offset = file_size - 1
-                logger.debug(f"Limited large range request from {requested_size} to {end_offset - start_offset + 1} bytes")
-            
+            # FIXED: Don't limit range requests - let browser seek freely
             headers['Content-Range'] = f'bytes {start_offset}-{end_offset}/{file_size}'
             headers['Content-Length'] = str(end_offset - start_offset + 1)
             status_code = 206
@@ -113,29 +101,23 @@ async def stream_video_route(request: web.Request):
         response = web.StreamResponse(status=status_code, headers=headers)
         await response.prepare(request)
 
-        # --- REVISED STREAMING LOGIC ---
-        # Using Pyrogram's high-level stream_media for better reliability and seeking.
-        chunk_size = 1024 * 1024  # Pyrogram's stream_media uses 1MB chunks.
-        
-        # Calculate the total bytes we need to serve for this request.
+        # Stream with Pyrogram
+        chunk_size = 1024 * 1024  # 1MB chunks
         bytes_to_serve = end_offset - start_offset + 1
-
         bytes_streamed = 0
         request_id = f"stream_{message_id}_{encoded_id[:10]}"
-        max_retries = 3  # Increased retries for better reliability
+        max_retries = 3
         current_retry = 0
 
         async with tracked_stream_response(response, stream_tracker, request_id):
             while current_retry <= max_retries:
                 try:
-                    # Calculate remaining bytes to stream
                     remaining_bytes = bytes_to_serve - bytes_streamed
                     
                     if remaining_bytes <= 0:
                         logger.info(f"Video stream completed for {message_id}. Total: {bytes_streamed} bytes")
                         break
                     
-                    # Calculate current position for resumption
                     current_byte_offset = start_offset + bytes_streamed
                     current_start_chunk = current_byte_offset // chunk_size
                     current_skip_bytes = current_byte_offset % chunk_size
@@ -143,7 +125,6 @@ async def stream_video_route(request: web.Request):
                     if bytes_streamed > 0:
                         logger.info(f"Resuming video stream for {message_id} at byte {current_byte_offset}")
                     
-                    # Use Pyrogram's stream_media with chunk offset
                     media_stream = streamer_client.stream_media(
                         media_msg,
                         offset=current_start_chunk
@@ -157,7 +138,7 @@ async def stream_video_route(request: web.Request):
                             logger.debug(f"Empty chunk received for {message_id}, ending stream")
                             break
 
-                        # Skip bytes in first chunk if resuming mid-chunk
+                        # Skip bytes in first chunk if resuming
                         if chunk_index == 0 and current_skip_bytes > 0:
                             chunk = chunk[current_skip_bytes:]
 
@@ -165,15 +146,13 @@ async def stream_video_route(request: web.Request):
                         if bytes_streamed + len(chunk) > bytes_to_serve:
                             chunk = chunk[:bytes_to_serve - bytes_streamed]
 
-                        # Write chunk with improved error handling
                         try:
-                            # Use a timeout for writing to prevent indefinite stalls
                             await asyncio.wait_for(response.write(chunk), timeout=30)
                             bytes_streamed += len(chunk)
-                            consecutive_errors = 0  # Reset error counter on success
+                            consecutive_errors = 0
                             
-                            # Log progress for large streams
-                            if bytes_to_serve > 0 and bytes_streamed % (10 * 1024 * 1024) < len(chunk):  # Check around every 10MB mark
+                            # Log progress
+                            if bytes_to_serve > 0 and bytes_streamed % (10 * 1024 * 1024) < len(chunk):
                                 progress = (bytes_streamed / bytes_to_serve) * 100
                                 logger.info(f"Video stream progress for {message_id}: {progress:.1f}%")
                                 
@@ -200,29 +179,24 @@ async def stream_video_route(request: web.Request):
                         
                         chunk_index += 1
                         
-                        # Check if we've served all required bytes
                         if bytes_streamed >= bytes_to_serve:
                             break
                     
-                    # Streaming completed successfully
                     logger.info(f"Video stream completed successfully for {message_id}")
                     break
 
                 except FloodWait as e:
                     logger.warning(f"FloodWait during video stream {message_id}: {e.value}s")
                     
-                    # Try alternative client first
                     alternative_client = await client_manager.get_alternative_streaming_client(streamer_client)
                     if alternative_client:
                         logger.info(f"Switching to alternative client for {message_id}")
                         streamer_client = alternative_client
-                        # Re-fetch media message in case of client switch is necessary for Pyrogram's internal logic
                         media_msg = await get_media_message(streamer_client, message_id)
                         await asyncio.sleep(1)
                         continue
                     else:
-                        # No alternative, wait briefly
-                        wait_time = min(e.value, 30)  # Cap at 30 seconds
+                        wait_time = min(e.value, 30)
                         logger.info(f"Waiting {wait_time}s before retry")
                         await asyncio.sleep(wait_time)
                         continue
@@ -235,21 +209,17 @@ async def stream_video_route(request: web.Request):
                         logger.error(f"Max retries reached for {message_id}, aborting")
                         break
                     
-                    # Try alternative client on non-FloodWait error
                     try:
                         alternative_client = await client_manager.get_alternative_streaming_client(streamer_client)
                         if alternative_client:
                             logger.info(f"Switching to alternative client after error")
                             streamer_client = alternative_client
-                            # Re-fetch media message
                             media_msg = await get_media_message(streamer_client, message_id)
                     except Exception as alt_e:
                         logger.error(f"Error switching client: {alt_e}")
                     
-                    # Exponential backoff
                     await asyncio.sleep(min(2 ** current_retry, 10))
 
-        # Record bandwidth usage
         if bytes_streamed > 0:
             await add_bandwidth_usage(bytes_streamed)
 
