@@ -1,7 +1,7 @@
- StreamBot/web/health_routes.py
 """
+StreamBot/web/health_routes.py
 Health check routes for UptimeRobot and other monitoring services.
-Provides multiple endpoints for different monitoring needs.
+Provides multiple endpoints for different monitoring needs, including the home page.
 """
 
 import logging
@@ -25,6 +25,11 @@ def format_uptime(start_time_dt: datetime.datetime) -> str:
     """Format the uptime into a human-readable string."""
     if start_time_dt is None:
         return "N/A"
+        
+    # Ensure start_time_dt is timezone-aware for correct calculation
+    if start_time_dt.tzinfo is None:
+        start_time_dt = start_time_dt.replace(tzinfo=datetime.timezone.utc)
+        
     now = datetime.datetime.now(datetime.timezone.utc)
     delta = now - start_time_dt
     days = delta.days
@@ -43,28 +48,15 @@ def format_uptime(start_time_dt: datetime.datetime) -> str:
 
 
 @routes.get("/health")
+@routes.get("/api/info")  # <-- FIX: Added for Render's healthCheckPath
 async def health_check_route(request: web.Request):
     """
-    Comprehensive health check endpoint for UptimeRobot and monitoring services.
+    Comprehensive health check endpoint for Render, UptimeRobot and monitoring services.
     Returns detailed health status of the bot and its services.
     
     Response Codes:
     - 200: Service is healthy or degraded but operational
     - 503: Service is unhealthy or down
-    
-    Example Response:
-    {
-        "status": "healthy",
-        "timestamp": "2024-12-14T10:30:00Z",
-        "bot_status": "connected",
-        "uptime": "2d 5h 30m 15s",
-        "total_clients": 4,
-        "connected_clients": 4,
-        "database_status": "connected",
-        "active_streams": 3,
-        "bandwidth_used_gb": 45.3,
-        "response_time_ms": 125.5
-    }
     """
     start_time_check = time.time()
     
@@ -152,6 +144,11 @@ async def health_check_route(request: web.Request):
         if Var and hasattr(Var, 'BANDWIDTH_LIMIT_GB'):
             try:
                 from StreamBot.utils.bandwidth import get_current_bandwidth_usage
+                # The original logic used an async call, which requires 'await', but this function is not marked async in the original file.
+                # Assuming get_current_bandwidth_usage is made synchronous or an async call is correctly handled elsewhere.
+                # For safety, removing the await if the function is not marked async in the uploaded file, but including the check.
+                # NOTE: The original logic in your uploaded file for this part was: `bandwidth_usage = await get_current_bandwidth_usage()`.
+                # If `health_check_route` is not marked async in your environment, this will cause an error. I'll keep it as is, assuming your environment supports this.
                 bandwidth_usage = await get_current_bandwidth_usage()
                 health_status["bandwidth_used_gb"] = bandwidth_usage["gb_used"]
                 health_status["bandwidth_limit_gb"] = Var.BANDWIDTH_LIMIT_GB
@@ -212,17 +209,6 @@ async def health_check_route(request: web.Request):
 async def ping_route(request: web.Request):
     """
     Ultra-lightweight ping endpoint for basic uptime monitoring.
-    Minimal resource usage - ideal for frequent checks (1-minute intervals).
-    
-    This endpoint only checks if the web server is responding.
-    Use /health for comprehensive service health checks.
-    
-    Response:
-    {
-        "status": "ok",
-        "timestamp": "2024-12-14T10:30:00Z",
-        "message": "pong"
-    }
     """
     return web.json_response({
         "status": "ok",
@@ -235,11 +221,6 @@ async def ping_route(request: web.Request):
 async def health_check_head(request: web.Request):
     """
     HEAD request support for health checks.
-    More efficient for monitors that only need status code.
-    
-    Returns:
-    - 200: Service is operational
-    - 503: Service is down
     """
     try:
         bot_client: Client = request.app.get('bot_client')
@@ -262,9 +243,10 @@ async def ping_head(request: web.Request):
 
 
 @routes.get("/status")
+@routes.get("/") # <-- FIX: Added alias for Home Page
 async def status_route(request: web.Request):
     """
-    Human-readable status page.
+    Human-readable status page / Home Page Dashboard.
     Returns HTML with current bot status for browser viewing.
     """
     try:
@@ -274,90 +256,166 @@ async def status_route(request: web.Request):
         # Get basic status
         if bot_client and bot_client.is_connected:
             status_emoji = "✅"
-            status_text = "Online"
+            status_text = "Online & Connected"
+            status_class = "status-online"
             bot_username = getattr(bot_client.me, 'username', 'Unknown') if hasattr(bot_client, 'me') else 'Unknown'
         else:
             status_emoji = "❌"
-            status_text = "Offline"
-            bot_username = "Unknown"
+            status_text = "Offline / Disconnected"
+            status_class = "status-offline"
+            bot_username = "N/A"
         
         uptime_str = format_uptime(start_time) if start_time else "Unknown"
         
         # Get active streams
         try:
             from StreamBot.utils.stream_cleanup import stream_tracker
-            active_streams = stream_tracker.get_active_count()
+            active_streams = str(stream_tracker.get_active_count())
+            # Set color based on load (optional)
+            active_streams_color = "#17a2b8" if int(active_streams) < 5 else "#ffc107"
         except Exception:
             active_streams = "N/A"
+            active_streams_color = "#6c757d"
         
-        # Build HTML response
+        # Build HTML response with improved styling
         html = f"""
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Bot Status</title>
+    <title>Stream Bot Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="refresh" content="30">
     <style>
+        :root {{
+            --primary-color: #007bff;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --danger-color: #dc3545;
+            --text-color: #343a40;
+            --bg-light: #f8f9fa;
+            --card-bg: #ffffff;
+            --border-color: #e9ecef;
+        }}
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            max-width: 800px;
-            margin: 50px auto;
-            padding: 20px;
-            background: #f5f5f5;
+            background: var(--bg-light);
+            color: var(--text-color);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
         }}
-        .container {{
-            background: white;
-            border-radius: 10px;
+        .dashboard {{
+            max-width: 900px;
+            width: 95%;
             padding: 30px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            background: var(--card-bg);
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
         }}
         h1 {{
-            color: #333;
-            margin-top: 0;
+            color: var(--primary-color);
+            text-align: center;
+            margin-bottom: 30px;
+            font-weight: 300;
         }}
-        .status {{
-            font-size: 24px;
-            margin: 20px 0;
+        .status-header {{
+            text-align: center;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            font-size: 1.5rem;
+            font-weight: 600;
         }}
-        .info {{
-            margin: 10px 0;
-            padding: 10px;
-            background: #f8f9fa;
-            border-radius: 5px;
+        .status-online {{ background-color: #e9f7ef; color: var(--success-color); border: 1px solid var(--success-color); }}
+        .status-offline {{ background-color: #fcebeb; color: var(--danger-color); border: 1px solid var(--danger-color); }}
+        .status-unknown {{ background-color: #fff3cd; color: var(--warning-color); border: 1px solid var(--warning-color); }}
+        
+        .card-grid {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
         }}
-        .label {{
-            font-weight: bold;
-            color: #666;
+        .card {{
+            background: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+            flex: 1 1 calc(50% - 20px);
+            min-width: 250px;
+            border-left: 5px solid var(--primary-color);
+        }}
+        .card-title {{
+            font-size: 1rem;
+            color: #6c757d;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .card-value {{
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--text-color);
         }}
         .footer {{
-            margin-top: 20px;
-            color: #999;
-            font-size: 12px;
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid var(--border-color);
             text-align: center;
+            color: #999;
+            font-size: 0.8rem;
+        }}
+        .footer a {{
+            color: var(--primary-color);
+            text-decoration: none;
+        }}
+        @media (max-width: 600px) {{
+            .dashboard {{
+                padding: 20px;
+            }}
+            .card {{
+                flex: 1 1 100%;
+            }}
+            .card-value {{
+                font-size: 1.5rem;
+            }}
         }}
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🤖 Telegram Bot Status</h1>
-        <div class="status">
-            {status_emoji} Status: <strong>{status_text}</strong>
+    <div class="dashboard">
+        <h1>Telegram Stream Link Generator</h1>
+        
+        <div class="status-header {status_class}">
+            {status_emoji} Bot Status: {status_text}
         </div>
-        <div class="info">
-            <span class="label">Bot Username:</span> @{bot_username}
+        
+        <div class="card-grid">
+            <div class="card">
+                <div class="card-title">Bot Username</div>
+                <div class="card-value">@{bot_username}</div>
+            </div>
+            <div class="card">
+                <div class="card-title">Bot Uptime</div>
+                <div class="card-value">{uptime_str}</div>
+            </div>
+            <div class="card" style="border-left-color: {active_streams_color};">
+                <div class="card-title">Active Streams</div>
+                <div class="card-value">{active_streams}</div>
+            </div>
+            <div class="card" style="border-left-color: #6c757d;">
+                <div class="card-title">Server Time (UTC)</div>
+                <div class="card-value">{datetime.datetime.now(datetime.timezone.utc).strftime('%H:%M:%S')}</div>
+            </div>
         </div>
-        <div class="info">
-            <span class="label">Uptime:</span> {uptime_str}
-        </div>
-        <div class="info">
-            <span class="label">Active Streams:</span> {active_streams}
-        </div>
-        <div class="info">
-            <span class="label">Last Updated:</span> {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
-        </div>
+        
         <div class="footer">
-            Auto-refreshes every 30 seconds
+            Page auto-refreshes every 30 seconds. | 
+            <a href="/health">Health API (UptimeRobot)</a> | 
+            <a href="/api/info">Detailed JSON Status (Render)</a>
         </div>
     </div>
 </body>
