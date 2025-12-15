@@ -24,6 +24,7 @@ from StreamBot.security.validator import validate_range_header, sanitize_filenam
 from StreamBot.utils.custom_dl import ByteStreamer
 from .streaming import stream_video_route
 from ..utils.stream_cleanup import stream_tracker, tracked_stream_response
+from .health_routes import routes as health_routes
 from ..utils.bandwidth import is_bandwidth_limit_exceeded, add_bandwidth_usage
 from ..utils.exceptions import NoClientsAvailableError
 from ..session_generator.interactive_login import interactive_login_manager
@@ -580,7 +581,8 @@ async def setup_webapp(bot_instance: Client, client_manager, start_time: datetim
     
     # Add routes
     app.add_routes(routes)
-    
+    app.add_routes(health_routes)
+
     # Configure CORS
     if Var.CORS_ALLOWED_ORIGINS:
         logger.info(f"CORS enabled for origins: {Var.CORS_ALLOWED_ORIGINS}")
