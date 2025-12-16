@@ -26,6 +26,7 @@ def format_uptime(start_time_dt: datetime.datetime) -> str:
     if start_time_dt is None:
         return "N/A"
     
+    # Ensure start_time_dt is timezone-aware (UTC)
     if start_time_dt.tzinfo is None:
         start_time_dt = start_time_dt.replace(tzinfo=datetime.timezone.utc)
         
@@ -46,7 +47,7 @@ def format_uptime(start_time_dt: datetime.datetime) -> str:
     return uptime_str.strip() if uptime_str else "0s"
 
 
-# --- CSS STYLES (Defined separately to avoid Python f-string errors) ---
+# --- CSS STYLES (Defined separately to avoid syntax errors) ---
 PAGE_STYLE = """
     :root {
         --bg-color: #0f0f0f;
@@ -159,6 +160,7 @@ async def health_check_route(request: web.Request):
     """
     Comprehensive health check endpoint.
     Returns JSON status.
+    (HEAD is handled automatically by aiohttp)
     """
     try:
         start_time = request.app.get('start_time') or request.app.get('bot_start_time')
@@ -189,7 +191,7 @@ async def health_check_route(request: web.Request):
 
 @routes.get("/ping")
 async def ping_route(request: web.Request):
-    """Simple ping."""
+    """Simple ping. (HEAD is handled automatically by aiohttp)"""
     return web.json_response({"status": "ok", "message": "pong"})
 
 
@@ -222,7 +224,7 @@ async def status_route(request: web.Request):
         except Exception:
             active_streams = "0"
 
-        # Generate HTML (Using standard formatting)
+        # Generate HTML
         html_content = f"""
 <!DOCTYPE html>
 <html lang="en">
