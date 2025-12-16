@@ -4,6 +4,15 @@ services:
     env: docker
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/info
+    
+    # CRITICAL FIX: Explicitly setting the plan to 'free' prevents
+    # triggering any paid instance charges.
+    plan: free
+    
+    # Recommended to use a free region like oregon (US) or frankfurt (EU)
+    # The 'free' plan is not available in all regions.
+    region: oregon 
+    
     envVars:
       # --- Telegram Core (Required) ---
       - key: API_ID
@@ -29,7 +38,7 @@ services:
       
       # --- Video Streaming Frontend ---
       - key: VIDEO_FRONTEND_URL
-        value: https://cricster.pages.dev
+        value: 
       
       # --- Settings ---
       - key: LINK_EXPIRY_SECONDS
@@ -80,4 +89,3 @@ services:
         value: https://api.gplinks.com/api?api=your_api_key_here
       - key: FILE_SIZE_THRESHOLD
         value: 200
-
