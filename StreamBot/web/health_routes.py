@@ -193,12 +193,6 @@ async def ping_route(request: web.Request):
     return web.json_response({"status": "ok", "message": "pong"})
 
 
-@routes.head("/health")
-@routes.head("/ping")
-async def health_check_head(request: web.Request):
-    return web.Response(status=200)
-
-
 @routes.get("/status")
 @routes.get("/") 
 async def status_route(request: web.Request):
