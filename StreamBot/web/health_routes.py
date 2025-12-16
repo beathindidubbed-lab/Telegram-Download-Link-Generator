@@ -2,12 +2,11 @@
 StreamBot/web/health_routes.py
 Health check routes for UptimeRobot and other monitoring services.
 
-FIX 1: Removed explicit @routes.head decorators.
-FIX 2: Removed @routes.get("/api/info") to avoid collision with web.py, which has a more detailed API info route.
+FIXED: Removed explicit @routes.head decorators and the redundant @routes.get("/api/info").
+Routes remaining: /health, /ping, /status, /
 """
 
 import logging
-import time
 import datetime
 from aiohttp import web
 from pyrogram import Client
@@ -49,7 +48,7 @@ def format_uptime(start_time_dt: datetime.datetime) -> str:
     return uptime_str.strip() if uptime_str else "0s"
 
 
-# --- CSS STYLES (Cleaned up for clarity and dark mode) ---
+# --- CSS STYLES --- (Retained for status page aesthetic)
 PAGE_STYLE = """
     :root {
         --bg-color: #0f0f0f;
@@ -160,7 +159,7 @@ PAGE_STYLE = """
 async def health_check_route(request: web.Request):
     """
     Simple health check endpoint for /health.
-    (The HEAD method is handled automatically by aiohttp when defining a GET route)
+    (The HEAD method is handled automatically by aiohttp)
     """
     try:
         start_time = request.app.get('start_time') or request.app.get('bot_start_time')
@@ -182,7 +181,6 @@ async def health_check_route(request: web.Request):
             "uptime": format_uptime(start_time),
             "bot_connected": bot_connected
         }
-        # The user's code expects JSON response with status, we provide it here
         return web.json_response(response_data, status=status_code)
         
     except Exception as e:
