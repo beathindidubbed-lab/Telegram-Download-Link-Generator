@@ -1070,6 +1070,3 @@ async def session_dashboard_route(request: web.Request):
     except Exception as e:
         logger.error(f"Error in session dashboard: {e}", exc_info=True)
         return web.HTTPFound('/session')
-
-
-# Note: /session/logout route removed per UI change
