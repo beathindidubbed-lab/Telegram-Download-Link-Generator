@@ -1,9 +1,9 @@
 """
 StreamBot/web/health_routes.py
 Health check routes for UptimeRobot and other monitoring services.
-Includes a beautiful Dark Mode dashboard.
 
-FIX: Removed explicit @routes.head decorators to avoid collision with aiohttp's automatic HEAD registration for GET routes.
+FIX 1: Removed explicit @routes.head decorators.
+FIX 2: Removed @routes.get("/api/info") to avoid collision with web.py, which has a more detailed API info route.
 """
 
 import logging
@@ -157,10 +157,9 @@ PAGE_STYLE = """
 """
 
 @routes.get("/health")
-@routes.get("/api/info")
 async def health_check_route(request: web.Request):
     """
-    Comprehensive health check endpoint.
+    Simple health check endpoint for /health.
     (The HEAD method is handled automatically by aiohttp when defining a GET route)
     """
     try:
@@ -183,6 +182,7 @@ async def health_check_route(request: web.Request):
             "uptime": format_uptime(start_time),
             "bot_connected": bot_connected
         }
+        # The user's code expects JSON response with status, we provide it here
         return web.json_response(response_data, status=status_code)
         
     except Exception as e:
@@ -192,7 +192,7 @@ async def health_check_route(request: web.Request):
 
 @routes.get("/ping")
 async def ping_route(request: web.Request):
-    """Simple ping. (The HEAD method is handled automatically by aiohttp)"""
+    """Simple ping. (HEAD is handled automatically by aiohttp)"""
     return web.json_response({"status": "ok", "message": "pong"})
 
 
