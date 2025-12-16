@@ -49,7 +49,7 @@ def format_uptime(start_time_dt: datetime.datetime) -> str:
     return uptime_str.strip() if uptime_str else "0s"
 
 
-# --- CSS STYLES (Defined separately to avoid syntax errors) ---
+# --- CSS STYLES (Cleaned up for clarity and dark mode) ---
 PAGE_STYLE = """
     :root {
         --bg-color: #0f0f0f;
