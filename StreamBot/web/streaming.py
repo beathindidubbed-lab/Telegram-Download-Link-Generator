@@ -26,21 +26,49 @@ async def stream_video_route(request: web.Request):
     if message_id is None:
         raise web.HTTPBadRequest(text="Invalid or malformed stream link.")
 
-    logger.info(f"Video stream request for message_id: {message_id} from {get_client_ip(request)}")
+    client_ip = get_client_ip(request)
+    logger.info(f"Video stream request for message_id: {message_id} from {client_ip}")
 
     # Check bandwidth limit
     if await is_bandwidth_limit_exceeded():
         raise web.HTTPServiceUnavailable(text="Service temporarily unavailable due to bandwidth limits.")
 
     try:
+        # Increased timeout for client acquisition
         streamer_client = await asyncio.wait_for(
             client_manager.get_streaming_client(),
-            timeout=30
+            timeout=45
         )
         if not streamer_client or not streamer_client.is_connected:
             raise web.HTTPServiceUnavailable(text="Streaming service temporarily unavailable.")
 
-        media_msg = await get_media_message(streamer_client, message_id)
+        logger.debug(f"Using client @{streamer_client.me.username} for video stream {message_id}")
+
+        # Get media message with retry logic
+        max_msg_retries = 2
+        media_msg = None
+        for msg_retry in range(max_msg_retries):
+            try:
+                media_msg = await asyncio.wait_for(
+                    get_media_message(streamer_client, message_id),
+                    timeout=30
+                )
+                break
+            except asyncio.TimeoutError:
+                if msg_retry < max_msg_retries - 1:
+                    logger.warning(f"Timeout getting message {message_id}, retry {msg_retry + 1}/{max_msg_retries}")
+                    await asyncio.sleep(2)
+                    continue
+                raise web.HTTPGatewayTimeout(text="Request timeout. Please try again.")
+            except Exception as e:
+                if msg_retry < max_msg_retries - 1:
+                    logger.warning(f"Error getting message {message_id}: {e}, retry {msg_retry + 1}/{max_msg_retries}")
+                    await asyncio.sleep(2)
+                    continue
+                raise
+
+        if not media_msg:
+            raise web.HTTPNotFound(text="File not found.")
         
         # Get file attributes
         file_id, file_name, file_size, file_mime_type, file_unique_id = get_file_attr(media_msg)
@@ -50,30 +78,24 @@ async def stream_video_route(request: web.Request):
 
         # Check if file is a video using shared VIDEO_MIME_TYPES
         if file_mime_type not in VIDEO_MIME_TYPES:
+            logger.warning(f"Non-video MIME type requested for streaming: {file_mime_type}")
             raise web.HTTPBadRequest(text="File is not a streamable video format.")
-
-        # Get ByteStreamer
-        byte_streamer = client_manager.get_streamer_for_client(streamer_client)
-        if not byte_streamer:
-            raise web.HTTPInternalServerError(text="Streaming service not available.")
-
-        # Get file properties
-        file_id_obj = await byte_streamer.get_file_properties(message_id)
-        file_size = getattr(file_id_obj, 'file_size', file_size)
 
         if file_size == 0:
             raise web.HTTPBadRequest(text="Invalid video file.")
+
+        logger.info(f"Streaming video {file_name} ({file_size} bytes, {file_mime_type}) for {message_id}")
 
         # Streaming-optimized headers
         headers = {
             'Content-Type': file_mime_type,
             'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Cache-Control': 'public, max-age=3600',  # Allow caching for better performance
             'Connection': 'keep-alive',
-            'Content-Disposition': 'inline'
+            'Content-Disposition': f'inline; filename="{file_name}"'
         }
 
-        # Handle range requests for video seeking - FIXED CALCULATION
+        # Handle range requests for video seeking
         range_header = request.headers.get('Range')
         status_code = 200
         start_offset = 0
@@ -89,26 +111,24 @@ async def stream_video_route(request: web.Request):
             
             start_offset, end_offset = range_result
             
-            # IMPORTANT FIX: Only limit response size for very large requests
-            # Let the browser request what it needs, but prevent abuse
+            # Limit initial chunk size to prevent timeout on slow connections
             requested_size = end_offset - start_offset + 1
-            max_reasonable_request = 50 * 1024 * 1024  # 50MB max per request
+            max_initial_chunk = 10 * 1024 * 1024  # 10MB initial chunk
             
-            if requested_size > max_reasonable_request:
-                # Only limit if the request is unreasonably large
-                end_offset = start_offset + max_reasonable_request - 1
-                # Make sure we don't exceed file size
+            if requested_size > max_initial_chunk and start_offset == 0:
+                # For initial requests, send smaller chunk
+                end_offset = start_offset + max_initial_chunk - 1
                 if end_offset >= file_size:
                     end_offset = file_size - 1
-                logger.debug(f"Limited large range request from {requested_size} to {end_offset - start_offset + 1} bytes")
+                logger.debug(f"Limited initial chunk from {requested_size} to {end_offset - start_offset + 1} bytes")
             
             headers['Content-Range'] = f'bytes {start_offset}-{end_offset}/{file_size}'
             headers['Content-Length'] = str(end_offset - start_offset + 1)
             status_code = 206
-            logger.debug(f"Serving video range {start_offset}-{end_offset}/{file_size} for {message_id}")
+            logger.info(f"Serving video range {start_offset}-{end_offset}/{file_size} ({end_offset - start_offset + 1} bytes) for {message_id}")
         else:
             headers['Content-Length'] = str(file_size)
-            logger.debug(f"Serving full video {file_size} bytes for {message_id}")
+            logger.info(f"Serving full video {file_size} bytes for {message_id}")
 
         response = web.StreamResponse(status=status_code, headers=headers)
         await response.prepare(request)
