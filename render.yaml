@@ -30,7 +30,7 @@ services:
       
       # --- Web Server (Required) ---
       - key: BASE_URL
-        sync: false
+        sync: https://telegram-streamable-link-generator.onrender.com
       - key: PORT
         value: 8080
       - key: BIND_ADDRESS
